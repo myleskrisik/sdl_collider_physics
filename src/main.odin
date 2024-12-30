@@ -200,9 +200,18 @@ main :: proc() {
 
 		sdl.SetRenderDrawColor(g_renderer, 0x00, 0x00, 0x00, 0xFF)
 		points: [2]sdl.FPoint
+		if num_contacts == 2 {
+			sdl.RenderDrawLineF(
+				g_renderer,
+				contacts[0].position.x,
+				contacts[0].position.y,
+				contacts[1].position.x,
+				contacts[1].position.y,
+			)
+		}
+		sdl.SetRenderDrawColor(g_renderer, 0xEF, 0x47, 0x6F, 0xFF)
 		for i in 0 ..< num_contacts {
 			contact := contacts[i]
-			fmt.printfln("pt %v [%v, %v]", i, contact.position.x, contact.position.y)
 			sdl.RenderDrawPointF(g_renderer, contact.position.x, contact.position.y)
 		}
 
@@ -405,6 +414,7 @@ collider_collide :: proc(
 		abs(t[0]), abs(t[1]), 
 		abs(t[2]), abs(t[3]), 
 	}
+	fmt.printfln("t %v r %v", t, rotation_b_to_a)
 	rotation_a_to_b := linalg.transpose(rotation_b_to_a)
 
 	// Box A Faces
