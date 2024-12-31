@@ -6,9 +6,151 @@ import "core:math/linalg"
 import sdl "vendor:sdl2"
 
 SCREEN_SIZE :: [2]i32{1920, 1080}
+
 WORLD_SIZE :: [2]i32{380, 180}
 
+FRAME_RATE :: 60
+
+TICKS_PER_FRAME :: 1000 / FRAME_RATE
+
 input_state: Input_State
+
+main :: proc() {
+	// Initialize SDL
+	if init_res := sdl.Init(sdl.INIT_VIDEO); init_res < 0 {
+		fmt.eprintfln("SDL could not initialize! SDL_Error: %v\n", sdl.GetError())
+		return
+	}
+	defer sdl.Quit()
+
+	// Create window
+	g_window: ^sdl.Window
+	if g_window = sdl.CreateWindow(
+		"SDL Tutorial",
+		sdl.WINDOWPOS_UNDEFINED,
+		sdl.WINDOWPOS_UNDEFINED,
+		SCREEN_SIZE.x,
+		SCREEN_SIZE.y,
+		sdl.WINDOW_SHOWN,
+	); g_window == nil {
+		fmt.printf("Window could not be created! SDL_Error: %s\n", sdl.GetError())
+		return
+	}
+	defer sdl.DestroyWindow(g_window)
+
+	g_renderer: ^sdl.Renderer
+	if g_renderer = sdl.CreateRenderer(g_window, -1, sdl.RENDERER_ACCELERATED); g_renderer == nil {
+		fmt.eprintfln("Renderer could not be created! SDL error: %v", sdl.GetError())
+	}
+	defer sdl.DestroyRenderer(g_renderer)
+
+	sdl.SetRenderDrawBlendMode(g_renderer, sdl.BlendMode.BLEND)
+	sdl.SetHint(sdl.HINT_RENDER_SCALE_QUALITY, "0")
+
+	world_target := sdl.CreateTexture(
+		g_renderer,
+		sdl.PixelFormatEnum.RGBA32,
+		sdl.TextureAccess.TARGET,
+		WORLD_SIZE.x,
+		WORLD_SIZE.y,
+	)
+
+	collider := collider_new({16, 16}, {20, 20}, {0x7F, 0xB2, 0x85, 0x9F})
+	collider_2 := collider_new({20, 20}, {40, 40}, {0x7D, 0x83, 0xFF, 0x9F})
+
+	fps_timer := timer_new()
+	cap_timer := timer_new()
+	step_timer := timer_new()
+	counted_frames: f32 = 0
+	timer_start(&fps_timer)
+
+	quit := false
+	for !quit {
+		input_state_clear(&input_state)
+		for e: sdl.Event; sdl.PollEvent(&e); {
+			#partial switch e.type {
+			case .QUIT:
+				quit = true
+			case .KEYDOWN, .KEYUP:
+				if e.key.repeat != 0 do continue
+				#partial switch e.key.keysym.scancode {
+				case .W:
+					input_state.movement_up.half_transitions += 1
+					input_state.movement_up.ended_down = e.key.type == sdl.EventType.KEYDOWN
+				case .D:
+					input_state.movement_right.half_transitions += 1
+					input_state.movement_right.ended_down = e.key.type == sdl.EventType.KEYDOWN
+				case .S:
+					input_state.movement_down.half_transitions += 1
+					input_state.movement_down.ended_down = e.key.type == sdl.EventType.KEYDOWN
+				case .A:
+					input_state.movement_left.half_transitions += 1
+					input_state.movement_left.ended_down = e.key.type == sdl.EventType.KEYDOWN
+				case .Q:
+					input_state.rotate_clockwise.half_transitions += 1
+					input_state.rotate_clockwise.ended_down = e.key.type == sdl.EventType.KEYDOWN
+				case .E:
+					input_state.rotate_counter_clockwise.half_transitions += 1
+					input_state.rotate_counter_clockwise.ended_down =
+						e.key.type == sdl.EventType.KEYDOWN
+				}
+			}
+		}
+
+		timer_start(&cap_timer)
+		avg_fps := counted_frames / (f32(timer_get_ticks(fps_timer)) / 1000.0)
+		if avg_fps > 2000000 {
+			avg_fps = 0
+		}
+		delta_time := f32(timer_get_ticks(step_timer)) / 1000
+		timer_start(&step_timer)
+
+		sdl.SetRenderTarget(g_renderer, world_target)
+		sdl.SetRenderDrawColor(g_renderer, 0xFF, 0xFF, 0xFF, 0xFF)
+		sdl.RenderClear(g_renderer)
+
+		collider_draw_update(&collider, delta_time, g_renderer)
+		collider_draw(collider_2, g_renderer)
+
+		num_contacts, contacts := collider_collide(collider, collider_2)
+
+		sdl.SetRenderDrawColor(g_renderer, 0x00, 0x00, 0x00, 0xFF)
+		points: [2]sdl.FPoint
+		if num_contacts == 2 {
+			sdl.RenderDrawLineF(
+				g_renderer,
+				contacts[0].position.x,
+				contacts[0].position.y,
+				contacts[1].position.x,
+				contacts[1].position.y,
+			)
+		}
+		sdl.SetRenderDrawColor(g_renderer, 0xEF, 0x47, 0x6F, 0xFF)
+		for i in 0 ..< num_contacts {
+			contact := contacts[i]
+			sdl.RenderDrawPointF(g_renderer, contact.position.x, contact.position.y)
+		}
+		if num_contacts > 0 do fmt.printfln("c %v", contacts[0].separation)
+
+		sdl.SetRenderTarget(g_renderer, nil)
+		sdl.SetRenderDrawColor(g_renderer, 0xFF, 0xFF, 0xFF, 0xFF)
+		sdl.RenderClear(g_renderer)
+
+		// Draw camera texture
+		pixel_h := f32(SCREEN_SIZE.y) / f32(WORLD_SIZE.y)
+
+		dst := sdl.Rect {
+			x = 0,
+			y = 0,
+			w = WORLD_SIZE.x * i32(pixel_h),
+			h = WORLD_SIZE.y * i32(pixel_h),
+		}
+		sdl.RenderCopy(g_renderer, world_target, nil, &dst)
+		sdl.RenderPresent(g_renderer)
+
+		if frame_ticks := timer_get_ticks(cap_timer); frame_ticks < TICKS_PER_FRAME do sdl.Delay(TICKS_PER_FRAME - frame_ticks)
+	}
+}
 
 Collider :: struct {
 	position:   [2]f32,
@@ -71,20 +213,28 @@ collider_draw :: proc(collider: Collider, g_renderer: ^sdl.Renderer) {
 	)
 }
 
-collider_draw_update :: proc(collider: ^Collider, g_renderer: ^sdl.Renderer) {
-	MOVEMENT_ACCELERATION :: 0.0007
-	ROTATION_AMOUNT :: 0.1
-	FRICTION :: 0.00007
-	MAX_SPEED :: 0.5
+collider_draw_update :: proc(collider: ^Collider, delta_time: f32, g_renderer: ^sdl.Renderer) {
+	MOVEMENT_ACCELERATION :: 1.7
+	ROTATION_AMOUNT :: 30
+	FRICTION :: 0.05
+	MAX_SPEED :: 1.7
 
-	if input_state.movement_up.ended_down && collider.velocity.y >= -MAX_SPEED do collider.velocity.y -= MOVEMENT_ACCELERATION
-	if input_state.movement_down.ended_down && collider.velocity.y <= MAX_SPEED do collider.velocity.y += MOVEMENT_ACCELERATION
-	if input_state.movement_right.ended_down && collider.velocity.x <= MAX_SPEED do collider.velocity.x += MOVEMENT_ACCELERATION
-	if input_state.movement_left.ended_down && collider.velocity.x >= -MAX_SPEED do collider.velocity.x -= MOVEMENT_ACCELERATION
-	if input_state.rotate_clockwise.ended_down do collider.rotation -= ROTATION_AMOUNT
-	if !(input_state.movement_up.ended_down || input_state.movement_down.ended_down) do collider.velocity.x = move_towards(collider.velocity.x, 0, FRICTION)
-	if !(input_state.movement_left.ended_down || input_state.movement_right.ended_down) do collider.velocity.y = move_towards(collider.velocity.y, 0, FRICTION)
-	if input_state.rotate_counter_clockwise.ended_down do collider.rotation += ROTATION_AMOUNT
+	if input_state.movement_up.ended_down && collider.velocity.y >= -MAX_SPEED do collider.velocity.y -= MOVEMENT_ACCELERATION * delta_time
+	if input_state.movement_down.ended_down && collider.velocity.y <= MAX_SPEED do collider.velocity.y += MOVEMENT_ACCELERATION * delta_time
+
+	if input_state.movement_left.ended_down && collider.velocity.x >= -MAX_SPEED do collider.velocity.x -= MOVEMENT_ACCELERATION * delta_time
+	if input_state.movement_right.ended_down && collider.velocity.x <= MAX_SPEED do collider.velocity.x += MOVEMENT_ACCELERATION * delta_time
+
+	if input_state.rotate_clockwise.ended_down do collider.rotation -= ROTATION_AMOUNT * delta_time
+	if input_state.rotate_counter_clockwise.ended_down do collider.rotation += ROTATION_AMOUNT * delta_time
+
+	if !input_state.movement_up.ended_down && !input_state.movement_down.ended_down {
+		collider.velocity.y = move_towards(collider.velocity.y, 0, FRICTION)
+	}
+	if !input_state.movement_left.ended_down && !input_state.movement_right.ended_down {
+		collider.velocity.x = move_towards(collider.velocity.x, 0, FRICTION)
+	}
+
 
 	collider.position += collider.velocity
 
@@ -114,124 +264,6 @@ Input :: struct {
 	ended_down:       bool,
 }
 
-main :: proc() {
-	// Initialize SDL
-	if init_res := sdl.Init(sdl.INIT_VIDEO); init_res < 0 {
-		fmt.eprintfln("SDL could not initialize! SDL_Error: %v\n", sdl.GetError())
-		return
-	}
-	defer sdl.Quit()
-
-	// Create window
-	g_window: ^sdl.Window
-	if g_window = sdl.CreateWindow(
-		"SDL Tutorial",
-		sdl.WINDOWPOS_UNDEFINED,
-		sdl.WINDOWPOS_UNDEFINED,
-		SCREEN_SIZE.x,
-		SCREEN_SIZE.y,
-		sdl.WINDOW_SHOWN,
-	); g_window == nil {
-		fmt.printf("Window could not be created! SDL_Error: %s\n", sdl.GetError())
-		return
-	}
-	defer sdl.DestroyWindow(g_window)
-
-	g_renderer: ^sdl.Renderer
-	if g_renderer = sdl.CreateRenderer(g_window, -1, sdl.RENDERER_ACCELERATED); g_renderer == nil {
-		fmt.eprintfln("Renderer could not be created! SDL error: %v", sdl.GetError())
-	}
-	defer sdl.DestroyRenderer(g_renderer)
-
-	sdl.SetRenderDrawBlendMode(g_renderer, sdl.BlendMode.BLEND)
-	sdl.SetHint(sdl.HINT_RENDER_SCALE_QUALITY, "0")
-
-	world_target := sdl.CreateTexture(
-		g_renderer,
-		sdl.PixelFormatEnum.RGBA32,
-		sdl.TextureAccess.TARGET,
-		WORLD_SIZE.x,
-		WORLD_SIZE.y,
-	)
-
-	collider := collider_new({16, 16}, {20, 20}, {0x7F, 0xB2, 0x85, 0x9F})
-	collider_2 := collider_new({40, 40}, {100, 100}, {0x7D, 0x83, 0xFF, 0x9F})
-
-	quit := false
-	for !quit {
-		input_state_clear(&input_state)
-		for e: sdl.Event; sdl.PollEvent(&e); {
-			#partial switch e.type {
-			case .QUIT:
-				quit = true
-			case .KEYDOWN, .KEYUP:
-				if e.key.repeat != 0 do continue
-				#partial switch e.key.keysym.scancode {
-				case .W:
-					input_state.movement_up.half_transitions += 1
-					input_state.movement_up.ended_down = e.key.type == sdl.EventType.KEYDOWN
-				case .D:
-					input_state.movement_right.half_transitions += 1
-					input_state.movement_right.ended_down = e.key.type == sdl.EventType.KEYDOWN
-				case .S:
-					input_state.movement_down.half_transitions += 1
-					input_state.movement_down.ended_down = e.key.type == sdl.EventType.KEYDOWN
-				case .A:
-					input_state.movement_left.half_transitions += 1
-					input_state.movement_left.ended_down = e.key.type == sdl.EventType.KEYDOWN
-				case .Q:
-					input_state.rotate_clockwise.half_transitions += 1
-					input_state.rotate_clockwise.ended_down = e.key.type == sdl.EventType.KEYDOWN
-				case .E:
-					input_state.rotate_counter_clockwise.half_transitions += 1
-					input_state.rotate_counter_clockwise.ended_down =
-						e.key.type == sdl.EventType.KEYDOWN
-				}
-			}
-		}
-
-		sdl.SetRenderTarget(g_renderer, world_target)
-		sdl.SetRenderDrawColor(g_renderer, 0xFF, 0xFF, 0xFF, 0xFF)
-		sdl.RenderClear(g_renderer)
-		num_contacts, contacts := collider_collide(collider, collider_2)
-
-		collider_draw_update(&collider, g_renderer)
-		collider_draw(collider_2, g_renderer)
-
-		sdl.SetRenderDrawColor(g_renderer, 0x00, 0x00, 0x00, 0xFF)
-		points: [2]sdl.FPoint
-		if num_contacts == 2 {
-			sdl.RenderDrawLineF(
-				g_renderer,
-				contacts[0].position.x,
-				contacts[0].position.y,
-				contacts[1].position.x,
-				contacts[1].position.y,
-			)
-		}
-		sdl.SetRenderDrawColor(g_renderer, 0xEF, 0x47, 0x6F, 0xFF)
-		for i in 0 ..< num_contacts {
-			contact := contacts[i]
-			sdl.RenderDrawPointF(g_renderer, contact.position.x, contact.position.y)
-		}
-
-		sdl.SetRenderTarget(g_renderer, nil)
-		sdl.SetRenderDrawColor(g_renderer, 0xFF, 0xFF, 0xFF, 0xFF)
-		sdl.RenderClear(g_renderer)
-
-		// Draw camera texture
-		pixel_h := f32(SCREEN_SIZE.y) / f32(WORLD_SIZE.y)
-
-		dst := sdl.Rect {
-			x = 0,
-			y = 0,
-			w = WORLD_SIZE.x * i32(pixel_h),
-			h = WORLD_SIZE.y * i32(pixel_h),
-		}
-		sdl.RenderCopy(g_renderer, world_target, nil, &dst)
-		sdl.RenderPresent(g_renderer)
-	}
-}
 // Box vertex and edge numbering:
 //        e1
 //   v2 ------ v1
@@ -346,20 +378,20 @@ compute_incident_edge :: proc(
 	if incident_normal_abs.x > incident_normal_abs.y {
 		if math.sign(incident_normal.x) > 0.0 {
 			clip_vertex[0].vec = {half_size.x, half_size.y}
-			clip_vertex[0].fp.in_Edge2 = .Edge3
+			clip_vertex[0].fp.in_Edge2 = .Edge1
 			clip_vertex[0].fp.out_Edge2 = .Edge4
 
 			clip_vertex[1].vec = {half_size.x, -half_size.y}
 			clip_vertex[1].fp.in_Edge2 = .Edge4
-			clip_vertex[1].fp.out_Edge2 = .Edge1
+			clip_vertex[1].fp.out_Edge2 = .Edge3
 		} else {
 			clip_vertex[0].vec = {-half_size.x, -half_size.y}
-			clip_vertex[0].fp.in_Edge2 = .Edge1
+			clip_vertex[0].fp.in_Edge2 = .Edge3
 			clip_vertex[0].fp.out_Edge2 = .Edge2
 
 			clip_vertex[1].vec = {-half_size.x, half_size.y}
 			clip_vertex[1].fp.in_Edge2 = .Edge2
-			clip_vertex[1].fp.out_Edge2 = .Edge3
+			clip_vertex[1].fp.out_Edge2 = .Edge1
 		}
 	} else {
 		if math.sign(incident_normal.y) > 0.0 {
@@ -399,8 +431,8 @@ collider_collide :: proc(
 	a_pos := collider_a.position + half_a_size
 	b_pos := collider_b.position + half_b_size
 
-	a_rot := linalg.matrix2_rotate_f32(math.to_radians(collider_a.rotation))
-	b_rot := linalg.matrix2_rotate_f32(math.to_radians(collider_b.rotation))
+	a_rot := linalg.matrix2_rotate_f32(math.to_radians_f32(collider_a.rotation))
+	b_rot := linalg.matrix2_rotate_f32(math.to_radians_f32(collider_b.rotation))
 
 	a_rot_transpose := linalg.transpose(a_rot)
 	b_rot_transpose := linalg.transpose(b_rot)
@@ -414,14 +446,22 @@ collider_collide :: proc(
 		abs(t[0]), abs(t[1]), 
 		abs(t[2]), abs(t[3]), 
 	}
-	fmt.printfln("t %v r %v", t, rotation_b_to_a)
 	rotation_a_to_b := linalg.transpose(rotation_b_to_a)
 
 	// Box A Faces
-	face_a := linalg.abs(displacement_a) - half_a_size - rotation_b_to_a * displacement_b
+	face_a := linalg.abs(displacement_a) - half_a_size - rotation_b_to_a * half_b_size
+	fmt.printfln(
+		"da %v, ha %v, rba %v, hb %v: fa %v",
+		displacement_a,
+		half_a_size,
+		rotation_b_to_a,
+		half_b_size,
+		face_a,
+	)
 	if face_a.x > 0.0 || face_a.y > 0.0 do return
 
-	face_b := linalg.abs(displacement_b) - half_b_size - rotation_a_to_b * displacement_a
+	face_b := linalg.abs(displacement_b) - rotation_a_to_b * half_a_size - half_b_size
+	fmt.printfln("fb %v", face_b)
 	if face_b.x > 0.0 || face_b.y > 0.0 do return
 
 	axis := Axis.Face_A_X
@@ -529,3 +569,62 @@ collider_collide :: proc(
 	}
 	return
 }
+
+Timer :: struct {
+	start_ticks, paused_ticks: u32,
+	started, paused:           bool,
+}
+
+timer_new :: proc() -> Timer {
+	return Timer{start_ticks = 0, paused_ticks = 0, started = false, paused = false}
+}
+
+timer_start :: proc(timer: ^Timer) {
+	timer.started = true
+	timer.paused = false
+
+	timer.start_ticks = sdl.GetTicks()
+	timer.paused_ticks = 0
+}
+
+timer_stop :: proc(timer: ^Timer) {
+	timer.started = false
+	timer.paused = false
+	timer.start_ticks = 0
+	timer.paused_ticks = 0
+}
+
+timer_pause :: proc(timer: ^Timer) {
+	if timer.started && !timer.paused {
+		timer.paused = true
+
+		timer.paused_ticks = sdl.GetTicks() - timer.start_ticks
+		timer.start_ticks = 0
+	}
+}
+
+timer_unpause :: proc(timer: ^Timer) {
+	if timer.started && timer.paused {
+		timer.paused = false
+
+		timer.start_ticks = sdl.GetTicks() - timer.paused_ticks
+		timer.paused_ticks = 0
+	}
+}
+
+// Gets the ticks of the timer, in milliseconds
+timer_get_ticks :: proc(timer: Timer) -> u32 {
+	if !timer.started {
+		return 0
+	}
+	return timer.paused_ticks if timer.paused else sdl.GetTicks() - timer.start_ticks
+}
+
+timer_is_started :: proc(timer: Timer) -> bool {
+	return timer.started
+}
+
+timer_is_paused :: proc(timer: Timer) -> bool {
+	return timer.started && timer.paused
+}
+
