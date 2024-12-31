@@ -125,10 +125,20 @@ main :: proc() {
 				contacts[1].position.y,
 			)
 		}
-		sdl.SetRenderDrawColor(g_renderer, 0xEF, 0x47, 0x6F, 0xFF)
+
 		for i in 0 ..< num_contacts {
 			contact := contacts[i]
+			sdl.SetRenderDrawColor(g_renderer, 0xEF, 0x47, 0x6F, 0xFF)
 			sdl.RenderDrawPointF(g_renderer, contact.position.x, contact.position.y)
+
+			sdl.SetRenderDrawColor(g_renderer, 0xE2, 0xC0, 0x44, 0xFF)
+			sdl.RenderDrawLineF(
+				g_renderer,
+				contact.position.x,
+				contact.position.y,
+				contact.position.x + (contact.normal.x * contact.separation),
+				contact.position.y + (contact.normal.y * contact.separation),
+			)
 		}
 		if num_contacts > 0 do fmt.printfln("c %v", contacts[0].separation)
 
@@ -235,8 +245,9 @@ collider_draw_update :: proc(collider: ^Collider, delta_time: f32, g_renderer: ^
 		collider.velocity.x = move_towards(collider.velocity.x, 0, FRICTION)
 	}
 
-
 	collider.position += collider.velocity
+
+	fmt.printfln("rot %v deg", collider.rotation)
 
 	collider_draw(collider^, g_renderer)
 }
@@ -314,9 +325,9 @@ Feature_Pair :: struct {
 	value:     i32,
 }
 
-feature_pair_flip :: proc(fp: Feature_Pair) -> (new_fp: Feature_Pair) {
-	new_fp.in_Edge1, new_fp.in_Edge2 = fp.in_Edge2, fp.in_Edge1
-	new_fp.out_Edge1, new_fp.out_Edge2 = fp.out_Edge2, fp.out_Edge1
+feature_pair_flip :: proc(fp: ^Feature_Pair) {
+	fp.in_Edge1, fp.in_Edge2 = fp.in_Edge2, fp.in_Edge1
+	fp.out_Edge1, fp.out_Edge2 = fp.out_Edge2, fp.out_Edge1
 	return
 }
 
@@ -366,54 +377,54 @@ clip_segment_to_line :: proc(
 }
 
 compute_incident_edge :: proc(
-	half_size, position, normal: ^[2]f32,
+	half_size, position, normal: [2]f32,
 	rot: matrix[2, 2]f32,
 ) -> (
 	clip_vertex: [2]Clip_Vertex,
 ) {
 	rot_t := linalg.transpose(rot)
-	incident_normal := -(rot_t * normal^)
+	incident_normal := -(rot_t * normal)
 	incident_normal_abs := linalg.abs(incident_normal)
 
 	if incident_normal_abs.x > incident_normal_abs.y {
 		if math.sign(incident_normal.x) > 0.0 {
-			clip_vertex[0].vec = {half_size.x, half_size.y}
-			clip_vertex[0].fp.in_Edge2 = .Edge1
+			clip_vertex[0].vec = {half_size.x, -half_size.y}
+			clip_vertex[0].fp.in_Edge2 = .Edge3
 			clip_vertex[0].fp.out_Edge2 = .Edge4
 
-			clip_vertex[1].vec = {half_size.x, -half_size.y}
+			clip_vertex[1].vec = {half_size.x, half_size.y}
 			clip_vertex[1].fp.in_Edge2 = .Edge4
-			clip_vertex[1].fp.out_Edge2 = .Edge3
+			clip_vertex[1].fp.out_Edge2 = .Edge1
 		} else {
-			clip_vertex[0].vec = {-half_size.x, -half_size.y}
-			clip_vertex[0].fp.in_Edge2 = .Edge3
+			clip_vertex[0].vec = {-half_size.x, half_size.y}
+			clip_vertex[0].fp.in_Edge2 = .Edge1
 			clip_vertex[0].fp.out_Edge2 = .Edge2
 
-			clip_vertex[1].vec = {-half_size.x, half_size.y}
+			clip_vertex[1].vec = {-half_size.x, -half_size.y}
 			clip_vertex[1].fp.in_Edge2 = .Edge2
-			clip_vertex[1].fp.out_Edge2 = .Edge1
+			clip_vertex[1].fp.out_Edge2 = .Edge3
 		}
 	} else {
 		if math.sign(incident_normal.y) > 0.0 {
 			clip_vertex[0].vec = {half_size.x, half_size.y}
 			clip_vertex[0].fp.in_Edge2 = .Edge4
-			clip_vertex[0].fp.out_Edge2 = .Edge3
+			clip_vertex[0].fp.out_Edge2 = .Edge1
 
 			clip_vertex[1].vec = {-half_size.x, half_size.y}
-			clip_vertex[1].fp.in_Edge2 = .Edge3
+			clip_vertex[1].fp.in_Edge2 = .Edge1
 			clip_vertex[1].fp.out_Edge2 = .Edge2
 		} else {
 			clip_vertex[0].vec = {-half_size.x, -half_size.y}
 			clip_vertex[0].fp.in_Edge2 = .Edge2
-			clip_vertex[0].fp.out_Edge2 = .Edge1
+			clip_vertex[0].fp.out_Edge2 = .Edge3
 
 			clip_vertex[1].vec = {half_size.x, -half_size.y}
-			clip_vertex[1].fp.in_Edge2 = .Edge1
+			clip_vertex[1].fp.in_Edge2 = .Edge3
 			clip_vertex[1].fp.out_Edge2 = .Edge4
 		}
 	}
-	clip_vertex[0].vec = position^ + rot * clip_vertex[0].vec
-	clip_vertex[1].vec = position^ + rot * clip_vertex[1].vec
+	clip_vertex[0].vec = position + rot * clip_vertex[0].vec
+	clip_vertex[1].vec = position + rot * clip_vertex[1].vec
 	return
 }
 
@@ -450,18 +461,9 @@ collider_collide :: proc(
 
 	// Box A Faces
 	face_a := linalg.abs(displacement_a) - half_a_size - rotation_b_to_a * half_b_size
-	fmt.printfln(
-		"da %v, ha %v, rba %v, hb %v: fa %v",
-		displacement_a,
-		half_a_size,
-		rotation_b_to_a,
-		half_b_size,
-		face_a,
-	)
 	if face_a.x > 0.0 || face_a.y > 0.0 do return
 
 	face_b := linalg.abs(displacement_b) - rotation_a_to_b * half_a_size - half_b_size
-	fmt.printfln("fb %v", face_b)
 	if face_b.x > 0.0 || face_b.y > 0.0 do return
 
 	axis := Axis.Face_A_X
@@ -491,7 +493,7 @@ collider_collide :: proc(
 		axis = .Face_B_Y
 		separation = face_b.y
 		// Column 2
-		normal = [2]f32{b_rot[1, 0], b_rot[1, 1]} * (displacement_b.y > 0 ? 1 : -1)
+		normal = [2]f32{b_rot[0, 1], b_rot[1, 1]} * (displacement_b.y > 0 ? 1 : -1)
 	}
 
 	front_normal, side_normal: [2]f32
@@ -503,13 +505,13 @@ collider_collide :: proc(
 	case .Face_A_X:
 		front_normal = normal
 		front = linalg.dot(a_pos, front_normal) + half_a_size.x
-		side_normal = {a_rot[1, 0], a_rot[1, 1]}
+		side_normal = {a_rot[0, 1], a_rot[1, 1]}
 		side := linalg.dot(a_pos, side_normal)
 		neg_side = -side + half_a_size.y
 		pos_side = side + half_a_size.y
-		neg_edge = .Edge1
-		pos_edge = .Edge3
-		incident_edge = compute_incident_edge(&half_b_size, &b_pos, &front_normal, b_rot)
+		neg_edge = .Edge3
+		pos_edge = .Edge1
+		incident_edge = compute_incident_edge(half_b_size, b_pos, front_normal, b_rot)
 
 	case .Face_A_Y:
 		front_normal = normal
@@ -520,7 +522,7 @@ collider_collide :: proc(
 		pos_side = side + half_a_size.x
 		neg_edge = .Edge2
 		pos_edge = .Edge4
-		incident_edge = compute_incident_edge(&half_b_size, &b_pos, &front_normal, b_rot)
+		incident_edge = compute_incident_edge(half_b_size, b_pos, front_normal, b_rot)
 
 	case .Face_B_X:
 		front_normal = -normal
@@ -529,9 +531,9 @@ collider_collide :: proc(
 		side := linalg.dot(b_pos, side_normal)
 		neg_side = -side + half_b_size.y
 		pos_side = side + half_b_size.y
-		neg_edge = .Edge1
-		pos_edge = .Edge3
-		incident_edge = compute_incident_edge(&half_a_size, &a_pos, &front_normal, a_rot)
+		neg_edge = .Edge3
+		pos_edge = .Edge1
+		incident_edge = compute_incident_edge(half_a_size, a_pos, front_normal, a_rot)
 
 	case .Face_B_Y:
 		front_normal = -normal
@@ -542,7 +544,7 @@ collider_collide :: proc(
 		pos_side = side + half_b_size.x
 		neg_edge = .Edge2
 		pos_edge = .Edge4
-		incident_edge = compute_incident_edge(&half_a_size, &a_pos, &front_normal, a_rot)
+		incident_edge = compute_incident_edge(half_a_size, a_pos, front_normal, a_rot)
 	}
 
 	clip_points1, np1 := clip_segment_to_line(incident_edge, -side_normal, neg_side, neg_edge)
@@ -560,11 +562,7 @@ collider_collide :: proc(
 		// slide contact point onto reference face (easy to cull)
 		contacts[num_contacts].position = clip_points2[i].vec - separation * front_normal
 		contacts[num_contacts].feature_pair = clip_points2[i].fp
-		if axis == .Face_B_X || axis == .Face_B_Y {
-			contacts[num_contacts].feature_pair = feature_pair_flip(
-				contacts[num_contacts].feature_pair,
-			)
-		}
+		if axis == .Face_B_X || axis == .Face_B_Y do feature_pair_flip(&contacts[num_contacts].feature_pair)
 		num_contacts += 1
 	}
 	return
